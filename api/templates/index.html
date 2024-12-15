@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .canvas-container { position: relative; margin: 20px;}
+        canvas { border: 1px solid #ccc; }
+        .upload-container { margin: 20px; }
+        h1 { position: relative; margin: 20px}
+        .font-result {
+            margin: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+        }
+        .font-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .font-info {
+            margin-left: 15px;
+        }
+        .font-image {
+            width: 200px;
+            height: auto;
+        }
+        .probability {
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>무료 폰트 인식기</h1>
+    <div class="upload-container">
+        <input type="file" id="imageInput" accept="image/*">
+        <button onclick="uploadImage()">업로드</button>
+    </div>
+    <div class="canvas-container">
+        <canvas id="imageCanvas"></canvas>
+    </div>
+    <div id="fontResults" class="font-result"></div>
+
+    <script>
+        const canvas = document.getElementById('imageCanvas');
+        const ctx = canvas.getContext('2d');
+        let textBoxes = [], s3Path = '';
+
+        function uploadImage() {
+            const fileInput = document.getElementById('imageInput');
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('이미지를 선택해주세요.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image_file', file);
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                const img = new Image();
+                img.src = data.result.image_url;
+                s3Path = data.result.s3_path;
+                textBoxes = data.result.text_boxes;
+                
+                img.onload = () => {
+                    canvas.width = data.result.width + 20;
+                    canvas.height = data.result.height + 20;
+                    
+                    ctx.drawImage(img, 10, 10);
+                    
+                    textBoxes.forEach(box => {
+                        ctx.strokeStyle = 'red';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(box.x1 + 10, box.y1 + 10, box.x2 - box.x1, box.y2 - box.y1);
+                    });
+                };
+            })
+            .catch(e => console.error('에러:', e));
+        }
+
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            canvas.style.cursor = textBoxes.some(box => 
+                x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2
+            ) ? 'move' : 'default';
+        });
+
+        canvas.addEventListener('click', e => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const box = textBoxes.find(box => 
+                x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2
+            );
+
+            if (box) {
+                fetch('/recognition', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        text_box: JSON.stringify(box),
+                        s3_path: s3Path,
+                        language: "all"
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    displayFontResults(data.recognitionfontlist);
+                })
+                .catch(e => console.error('에러:', e));
+            }
+        });
+
+        function displayFontResults(fonts) {
+            const resultsDiv = document.getElementById('fontResults');
+            resultsDiv.innerHTML = '<h2>인식된 폰트 결과</h2>';
+            
+            fonts.forEach(font => {
+                const fontItem = document.createElement('div');
+                fontItem.className = 'font-item';
+                
+                const html = `
+                    <img src="${font.image_url}" class="font-image" alt="${font.font_name}">
+                    <div class="font-info">
+                        <h3>${font.font_name}</h3>
+                        <p>제작사: ${font.company || '정보없음'}</p>
+                        <p class="probability">일치율: ${(font.prob).toFixed(2)}%</p>
+                        <p>가격: ${font.product_m_min_price > 0 ? font.product_m_min_price + '원' : '무료'}</p>
+                    </div>
+                `;
+                
+                fontItem.innerHTML = html;
+                resultsDiv.appendChild(fontItem);
+            });
+        }
+    </script>
+</body>
+</html>
